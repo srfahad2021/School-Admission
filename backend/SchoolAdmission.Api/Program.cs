@@ -13,7 +13,7 @@ builder.Services.AddSingleton(new HoldOptions(holdSeconds));
 builder.Services.AddScoped<AdmissionService>();
 builder.Services.AddHostedService<ExpiryService>();
 builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
-    p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
+    p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod().WithExposedHeaders("Date")));
 
 var app = builder.Build();
 
