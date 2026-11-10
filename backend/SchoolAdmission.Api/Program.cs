@@ -3,13 +3,15 @@ using SchoolAdmission.Api;
 
 var builder = WebApplication.CreateBuilder(args);
 
-var connectionString = builder.Configuration.GetConnectionString("Default")
-    ?? throw new InvalidOperationException("ConnectionStrings__Default is not set.");
-
-var holdSeconds = int.TryParse(builder.Configuration["HOLD_DURATION_SECONDS"], out var s) && s > 0 ? s : 600;
-
-builder.Services.AddDbContext<AppDbContext>(o => o.UseNpgsql(connectionString));
-builder.Services.AddSingleton(new HoldOptions(holdSeconds));
+builder.Services.AddDbContext<AppDbContext>((sp, o) =>
+    o.UseNpgsql(sp.GetRequiredService<IConfiguration>().GetConnectionString("Default")
+        ?? throw new InvalidOperationException("ConnectionStrings__Default is not set.")));
+builder.Services.AddSingleton(sp =>
+{
+    var cfg = sp.GetRequiredService<IConfiguration>();
+    var ok = int.TryParse(cfg["HOLD_DURATION_SECONDS"], out var secs) && secs > 0;
+    return new HoldOptions(ok ? secs : 600);
+});
 builder.Services.AddScoped<AdmissionService>();
 builder.Services.AddHostedService<ExpiryService>();
 builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
@@ -40,7 +42,8 @@ app.Use(async (ctx, next) =>
 
 await InitDatabaseAsync(app.Services, app.Logger);
 
-app.MapGet("/health", () => Results.Ok(new { status = "ok", holdDurationSeconds = holdSeconds }));
+app.MapGet("/health", (HoldOptions o) =>
+    Results.Ok(new { status = "ok", holdDurationSeconds = o.DurationSeconds }));
 
 // 1. Create class
 app.MapPost("/classes", async (CreateClassRequest req, AdmissionService svc) =>
