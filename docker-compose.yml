@@ -36,6 +36,30 @@ services:
       - backend
     ports:
       - "3000:80"
-
+  postgres-test:
+    profiles: ["test"]
+    image: postgres:16-alpine
+    command: ["postgres", "-c", "max_connections=500"]
+    environment:
+      POSTGRES_USER: school
+      POSTGRES_PASSWORD: school_pw
+      POSTGRES_DB: postgres
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U school -d postgres"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  backend-tests:
+    profiles: ["test"]
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.tests
+    environment:
+      TEST_DB_CONNECTION: "Host=postgres-test;Port=5432;Database=postgres;Username=school;Password=school_pw"
+    depends_on:
+      postgres-test:
+        condition: service_healthy
 volumes:
   pgdata:

@@ -93,13 +93,15 @@ curl -s -X POST localhost:8080/classes/<classId>/holds -H "X-Student-Id: 2015269
 ## Running the tests
  
 ### Backend tests
- 
-Requires the **.NET 10 SDK** and **Docker running** (the tests start a temporary PostgreSQL container with Testcontainers).
- 
+
+Only Docker is needed. This builds a .NET SDK container and runs the tests against a temporary PostgreSQL container:
+
 ```bash
-cd backend
-dotnet test SchoolAdmission.Tests
+docker compose --profile test run --rm backend-tests
+docker compose --profile test down     # cleanup
 ```
+
+(If you have the .NET 10 SDK and Docker installed, you can also run `cd backend && dotnet test SchoolAdmission.Tests`. In that case the tests start their own PostgreSQL container with Testcontainers.)
  
 They include:
  
@@ -173,5 +175,4 @@ Details and reasoning are in [ASSUMPTIONS.md](ASSUMPTIONS.md).
 | UI still calls the wrong API URL | `VITE_API_URL` is baked in at build time. Run `docker compose up --build` |
 | Port already in use (3000, 5432 or 8080) | Stop the program using it, or change the left side of the port mapping in `docker-compose.yml` |
 | Want a completely fresh database | `docker compose down -v` |
-| Backend tests say Docker is not running | Start Docker Desktop, then re-run `dotnet test` |
  

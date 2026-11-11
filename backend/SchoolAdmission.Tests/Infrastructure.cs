@@ -12,6 +12,10 @@ public static class SharedPostgres
 {
     private static readonly Lazy<Task<string>> Cs = new(async () =>
     {
+        // Set when the tests run inside Docker Compose (see docker-compose.yml)
+        var external = Environment.GetEnvironmentVariable("TEST_DB_CONNECTION");
+        if (!string.IsNullOrWhiteSpace(external)) return external;
+
         var container = new PostgreSqlBuilder("postgres:16-alpine")
             .WithCommand("-c", "max_connections=500")
             .Build();
