@@ -111,34 +111,7 @@ They include:
 - Expiry releases the seat automatically and an expired hold cannot be confirmed.
 - Ownership check, cancel, and input validation.
 - **Two backend instances** against one database never over-hold (bonus).
-### Load test (optional)
- 
-`scripts/load.sh` fires many concurrent applications with `curl`. Usage: `bash scripts/load.sh BASE_URL CLASS_ID FROM TO`.
- 
-```bash
-CID=$(curl -s -X POST localhost:8080/classes -H "Content-Type: application/json" \
-  -d '{"name":"Load Test","totalSeats":50}' | sed -E 's/.*"id":"([^"]+)".*/\1/')
- 
-bash scripts/load.sh http://localhost:8080 $CID 1 500
-curl -s localhost:8080/classes/$CID
-```
- 
-Expected: exactly `50` responses with `201`, `450` with `409`, and the class shows `heldSeats: 50, availableSeats: 0`.
- 
-To test **two backend processes on one database**, start a second backend and send load to both at once:
- 
-```bash
-docker run -d --name backend2 --network school-admission_default -p 8081:8080 \
-  -e "ConnectionStrings__Default=Host=postgres;Port=5432;Database=school_admission;Username=school;Password=school_pw" \
-  school-admission-backend
- 
-bash scripts/load.sh http://localhost:8080 $CID 1 250 &
-bash scripts/load.sh http://localhost:8081 $CID 251 500 &
-wait
-docker rm -f backend2
-```
- 
-The total number of `201` responses across both runs is still exactly the seat count.
+
  
 ## Project structure
  

@@ -6,7 +6,7 @@ Decisions I made where the brief was silent or ambiguous, with the reasoning.
 
 - **.NET 10** (the brief allows ".NET 8 or newer"), minimal API, EF Core with the Npgsql provider. The Dockerfile uses the matching `sdk:10.0` / `aspnet:10.0` images.
 - **`EnsureCreated` instead of migrations.** It builds the schema automatically on startup, which suits a `docker compose up` workflow. The trade-off is that a later schema change would need `docker compose down -v`. For a one-shot assignment this is acceptable.
-- **Startup retry.** The backend retries the database connection (up to 30 times, 2 s apart) so it survives Postgres starting slowly. Compose also has a Postgres healthcheck and a backend healthcheck, so the frontend only starts once the API is ready.
+- **Startup retry.** The backend retries the database connection (up to 30 times, 2 s apart) so it survives Postgres starting slowly. Compose also has a Postgres healthcheck so the backend start after the database is ready and frontend only starts once the API is ready.
 - **Configuration** is via environment variables: `ConnectionStrings__Default`, `HOLD_DURATION_SECONDS` (default 600, invalid or non-positive values fall back to 600) and `VITE_API_URL`. Vite variables are baked in at build time, so `VITE_API_URL` is passed as a Docker build argument. It must be the URL the *browser* uses (`http://localhost:8080`), not the container name.
 - **Ports:** frontend `3000`, backend `8080`, Postgres `5432`. Data lives in the named volume `pgdata`, so it survives `docker compose down` (but not `down -v`).
 
@@ -87,9 +87,6 @@ Startup note: two instances starting at the same instant on an empty database ma
 ## 8. Test and load results
 
 - Backend tests (`dotnet test`, using a real PostgreSQL container via Testcontainers) cover: 200 parallel applies against 10 seats, parallel idempotent confirm, duplicate application (sequential and parallel), expiry and release of seats, ownership check, cancel, input validation, and the two-instance test.
-- Manual load test (`scripts/load.sh`): 500 concurrent applications for 50 seats.
-  - One backend: `TODO: paste uniq -c output (expected: 50 x 201, 450 x 409)`
-  - Two backends, same database: `TODO: paste uniq -c outputs (expected: 50 x 201 in total)`
 
 ## 9. Known limitations
 
