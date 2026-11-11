@@ -1,20 +1,50 @@
-# AI usage
+# AI_USAGE
 
-Cursor, with Grok 4.7, was used on this repository for two things:
+## Tools used
 
-- Comparing the existing backend, frontend, and Docker setup with the assignment brief.
-- Writing `ASSUMPTIONS.md` and this file from the behavior already implemented in the code.
+- **Claude (Anthropic), chat interface:** Used throughout the project as a pair-programming and planning assistant.
+- **Cursor:** Used for the final check that everything is managed according to the requirement or not. 
 
-The application code was already committed before that pass. These documents describe that code. They do not replace it, and this session did not change the API, the seat-locking logic, or the UI.
+## Where AI was used
 
-## What was checked by hand
+| Area | How AI helped |
+|---|---|
+| Planning | Broke the assignment into phases and settled the hard design decisions first: row locking for concurrency, lazy plus background expiry, a partial unique index, and idempotent confirm |
+| Backend | Drafted the EF Core model, the hold logic (`AdmissionService`), the expiry background service and the minimal API endpoints |
+| Docker | Drafted the Dockerfiles, nginx config, `docker-compose.yml` and the healthchecks |
+| Frontend | Drafted the API client, polling hook, toasts and the React components (class list, create form, applications with countdown) |
+| Tests | Drafted the xUnit tests with Testcontainers, including the 200-request concurrency test and the two-instance test |
+| Docs | Drafted `README.md`, `ASSUMPTIONS.md` and this file, from the actual code and results of the project |
 
-The review read the endpoint mappings, `AdmissionService`, the EF model, the expiry background job, `docker-compose.yml`, and the React screens. Claims in `ASSUMPTIONS.md` were taken from those files: the class row lock, the 600-second default, the 17-digit check, the partial unique index, the named Postgres volume, and the 4-second poll.
+**I ran every command myself, read the output, and reported errors back. The AI never ran anything against my machine. I decided what to keep and what to change.**
 
-The gap that review found was in the deliverables, not in those behaviors. There were no automated backend tests, and these two markdown files were absent. `README.md` also does not yet say how to run tests, because there is no test project to run.
+## Where the AI made mistakes, and how I caught and fixed them
 
-## Mistakes
+1. **Wrong .NET target for my machine.** The AI first told me to create the project with `-f net8.0`. My .NET 10 SDK only offers `net10.0`, and the command failed. *Caught:* the CLI error. *Fix:* I used .NET 10 (the brief allows 8 or newer) and updated the Dockerfile images to `10.0`.
 
-No application code was generated in this session, so there was no AI code change to compile, run, and correct here.
+2. **Docker build failed after adding EF Core.** The build log showed `Microsoft.EntityFrameworkCore` and `Npgsql` not found, while the Dockerfile still used the `8.0` images and the project targeted a different version. *Caught:* the compiler errors in the Docker build output. *Fix:* added the `Npgsql.EntityFrameworkCore.PostgreSQL` package to the `.csproj` and made the Dockerfile images match the project's target framework.
 
-One documentation risk did come up. It would have been easy to invent a story about bugs the model made while building the API. That was not written down. This file only records the review and the writing of the assumption notes. If an earlier session with another model produced the C# or React code, that session is not described here, because its prompts and corrections were not available while writing this file.
+3. **Configuration was read too early, so tests could not override it.** The first `Program.cs` read the connection string and hold duration at the very top of startup. The test host could not change them. *Caught:* while planning the tests, I saw the tests needed their own database and a 2-second hold. *Fix:* moved both reads into lazy service registrations (`AddDbContext` with a service provider and a `HoldOptions` factory) and updated `/health` to use the injected options.
+
+4. **Test code did not compile.** The AI used `PostAsJsonAsync` without the `System.Net.Http.Json` using, and used the now-obsolete parameterless `PostgreSqlBuilder()` constructor. *Caught:* compiler error and warning from `dotnet test`. *Fix:* added the using and passed the image name to the builder constructor.
+
+5. **Manual test steps raced with backend startup.** The AI's instructions had me send requests right after restarting the backend. The API was not ready yet, so `curl -s` printed nothing, and I could not tell whether expiry worked. *Caught:* by noticing empty output and an unchanged seat count that proved nothing. *Fix:* added a short wait to the steps, and later a backend healthcheck in `docker-compose.yml` so the frontend only starts once the API is ready.
+
+6. **Test infrastructure leaked database connections.** The first test setup created a new connection pool (up to 100 connections) for each test database and never released it, while Postgres allows 100 connections by default. After the large concurrency test, the next test's app could not connect and kept retrying. *Caught:* the test log showed repeated "Database not ready (n/30)" warnings after a test finished. *Fix:* raised `max_connections` in the test container, lowered the pool size, cleared pools when each test factory is disposed, and turned off SQL logging in tests. TODO: confirm all backend tests pass after this fix, and edit this item if the real cause turned out to be different.
+
+## Problems the AI flagged before they happened
+
+- Browsers hide the `Date` response header from cross-origin JavaScript unless the server exposes it, so the frontend's clock-drift correction would have silently not worked. The backend CORS policy now exposes it.
+- Vite environment variables are baked in at build time, so `VITE_API_URL` is passed to Docker as a build argument.
+- An expired but not yet cleaned-up hold must never count as a taken seat, so every count and status check applies the expiry time directly rather than relying only on the background job.
+
+## How I verified the AI's work
+
+- Tested every endpoint by hand with `curl` against the running Docker stack: success cases, `400`, `403`, `404`, `409`, idempotent confirm and cancel.
+- Checked the seat arithmetic after each step, for example the class counts after a confirm and after a cancel.
+- Confirmed automatic expiry by watching `heldSeats` fall by itself with a 15-second hold duration, with no API calls.
+- Checked persistence with `docker compose down` followed by `docker compose up`.
+- Ran a clean start with `docker compose down -v` and read the startup log: schema creation, the partial unique index, and the startup order.
+- Wrote automated concurrency tests (200 parallel requests, parallel confirms, two backend instances).
+- TODO: temporarily remove `FOR UPDATE` from `ApplyAsync`, confirm that the concurrency test **fails**, then restore it. This proves the test really detects over-holding. If you do not do this, delete this line.
+- TODO: add the manual UI checks and load test results once done (two browsers fighting over the last seat, `scripts/load.sh`).

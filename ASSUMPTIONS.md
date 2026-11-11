@@ -1,61 +1,99 @@
-# Assumptions
+# ASSUMPTIONS
 
-The brief leaves several behaviors unspecified. These are the choices in this project and why they were made.
+Decisions I made where the brief was silent or ambiguous, with the reasoning.
 
-## Identity and access
+## 1. Stack and setup
 
-There is no login. The 17-digit birth registration number is the student. The UI stores it in `localStorage` and sends it as `X-Student-Id`. Refreshing or reopening the browser restores that number, and applications are loaded from the database, so an ongoing hold is still visible.
+- **.NET 10** (the brief allows ".NET 8 or newer"), minimal API, EF Core with the Npgsql provider. The Dockerfile uses the matching `sdk:10.0` / `aspnet:10.0` images.
+- **`EnsureCreated` instead of migrations.** It builds the schema automatically on startup, which suits a `docker compose up` workflow. The trade-off is that a later schema change would need `docker compose down -v`. For a one-shot assignment this is acceptable.
+- **Startup retry.** The backend retries the database connection (up to 30 times, 2 s apart) so it survives Postgres starting slowly. Compose also has a Postgres healthcheck and a backend healthcheck, so the frontend only starts once the API is ready.
+- **Configuration** is via environment variables: `ConnectionStrings__Default`, `HOLD_DURATION_SECONDS` (default 600, invalid or non-positive values fall back to 600) and `VITE_API_URL`. Vite variables are baked in at build time, so `VITE_API_URL` is passed as a Docker build argument. It must be the URL the *browser* uses (`http://localhost:8080`), not the container name.
+- **Ports:** frontend `3000`, backend `8080`, Postgres `5432`. Data lives in the named volume `pgdata`, so it survives `docker compose down` (but not `down -v`).
 
-The same page is used by the school admin and by parents. Creating a class does not require the student header. Anyone who can open the site can create a class. That matches “no login” and “all actions from the UI.”
+## 2. Identity and validation
 
-A student id must be exactly 17 digits. Anything else returns HTTP 400. The UI strips non-digits and will not call student APIs until the value is valid.
+- There is no login. The student's identity is the `X-Student-Id` header, taken on trust. Anyone who knows an ID can act as that student. This matches the brief and I did not add authentication.
+- `X-Student-Id` must be **exactly 17 digits**, otherwise `400`. The UI enforces the same rule and disables Apply until the ID is valid.
+- `POST /classes`: `name` must be non-empty (max 200 characters after trimming) and `totalSeats` a whole number from 1 to 100,000, otherwise `400`. Class names do not have to be unique, and capacity cannot be edited after creation (not in the spec).
+- Creating a class needs no admin login. The UI exposes it to everyone, as the brief says admin and parents both use the same UI.
+- IDs are a prefix plus 12 random hex characters (`c_...`, `h_...`).
 
-Knowing the number is enough to view, pay, or cancel that student’s applications. There is no second secret, because the brief defines this header as the identity.
+## 3. API behaviour
 
-## Classes and shifts
+| Situation | Response |
+|---|---|
+| Unknown class or hold ID | `404` |
+| No seats left on apply | `409` |
+| Student already has an active hold or confirmed seat in that class | `409` |
+| Confirming or cancelling someone else's hold | `403` |
+| Confirming an expired or cancelled hold | `409` |
+| Cancelling a confirmed admission | `409` (see below) |
+| Missing or invalid student ID, bad body | `400` |
 
-A shift is not a separate record. “Class 6 – Morning Shift” and “Class 6 – Day Shift” are two classes, each with its own name and seat capacity. The admin types the full name when creating the class.
+- All errors return JSON in the form `{ "error": "friendly message" }`. Unexpected errors return a generic `500` message without internal details.
+- Responses include a few extra fields (for example `studentId` on `GET /holds/{id}`). No specified field was renamed or removed.
+- `GET /holds/{id}` and the class endpoints need no student header, as in the spec.
+- "Active" means `HELD` and not yet expired, or `CONFIRMED`.
+- A student can hold seats in **different** classes at the same time (for example Class 6 Morning and Class 6 Day), because each shift is a separate class. The one-active-application rule is per student per class.
+- After an application expires or is cancelled, the same student may apply to that class again.
+- **A confirmed admission cannot be cancelled.** The brief doesn't allow or describe refunds, so I treat payment as final.
+- **Cancel is idempotent** on an already-cancelled hold. Cancelling an already-expired hold returns `409`.
+- Payment is simulated: `POST /holds/{id}/confirm` is the "payment succeeded" event.
+- **Confirm is idempotent:** repeating it on a confirmed hold returns `200 CONFIRMED` and changes nothing.
 
-Class name is required and limited to 200 characters. Seat capacity must be a whole number from 1 to 100,000. No academic year, fee amount, or parent name is stored. The brief only requires a name, a capacity, and a successful payment action.
+## 4. Concurrency
 
-## Holds, payment, and cancellation
+**The rule:** `heldSeats + confirmedSeats` never exceeds `totalSeats`.
 
-`HOLD_DURATION_SECONDS` sets the hold length. If the variable is missing, not a number, or not greater than zero, the duration is 600 seconds.
+- Applying for a seat runs in one database transaction that starts with `SELECT ... FROM classes WHERE id = @id FOR UPDATE`. This locks the class row. Concurrent applications for the same class queue on that lock. Each one then counts the active seats and inserts its hold only if there is room, so no two requests can both see "one seat left".
+- Confirm and cancel lock the **hold** row (`FOR UPDATE`) and then check owner, status and expiry. Parallel confirms are serialised, and only the first one changes the status. That is why `confirmedSeats` rises by exactly one.
+- As a second safety net, a **partial unique index** on `holds(class_id, student_id) WHERE status IN ('HELD','CONFIRMED')` makes it impossible for one student to have two active holds in a class, even if the application code had a bug. A violation of this index is turned into a `409`.
+- Locks apply per class, so applications for different classes don't block each other.
 
-Applying sets `expiresAt` to the current UTC time plus that duration. Paying calls `POST /holds/{holdId}/confirm` and treats payment as successful. There is no gateway and no amount.
+### Bonus: multiple backend processes
 
-A student may apply to several classes at once. Within one class they may have only one active application, meaning one unexpired `HELD` row or one `CONFIRMED` row. After a hold is `EXPIRED` or `CANCELLED`, they may apply to that class again.
+The locking is done by **PostgreSQL**, not by application memory (no `lock` statements or in-process queues). Two backend processes pointed at the same database take turns on the same row lock, so the invariant holds across processes as well.
 
-Confirming a hold that is already `CONFIRMED` returns 200 and does not change seat counts. That covers the idempotent-confirmation rule when the same request is sent more than once.
+I verified this with:
+- an automated test that starts two API instances against one database and sends 200 simultaneous applications, split between them, to a class with 10 seats (exactly 10 succeed);
+- a manual load test with two backend containers on ports 8080 and 8081 (results in the README / section 8).
 
-A confirmed admission cannot be cancelled (HTTP 409). The brief’s cancel action is for releasing a hold before payment. Cancelling an already cancelled hold returns 204 and changes nothing.
+Startup note: two instances starting at the same instant on an empty database may race to create the tables. One may fail its first attempt and succeed on retry, which is one reason the startup retry loop exists.
 
-Confirming or cancelling a hold that belongs to a different student returns 403. An unknown class or hold returns 404. No seats left, or a second active application in the same class, returns 409.
+## 5. Hold expiry
 
-`GET /holds/{holdId}` does not require the student header. The response includes `studentId` in addition to the required fields. Error bodies are `{ "error": "..." }`.
+- Hold duration comes from `HOLD_DURATION_SECONDS`. `expiresAt` is set at application time as `now + duration`.
+- Two layers make expiry automatic, with no API call needed:
+  1. **Correctness (lazy):** every seat count and status check treats a `HELD` row with `expires_at <= now` as expired. A seat is free the instant its hold expires, even if no cleanup has run yet.
+  2. **Tidiness (background):** a hosted service runs every second and marks overdue holds as `EXPIRED` using a single idempotent `UPDATE`, so it is safe with several instances running.
+- A student's own stale holds are cleared inside the apply transaction so they cannot block the unique index.
 
-## When a seat comes back
+## 6. Time handling
 
-Seat counts treat a `HELD` row as free as soon as `expiresAt` is in the past. The UI and `GET` responses report that hold as `EXPIRED` at the same moment, using the current time. A background job then writes `EXPIRED` onto the row about once a second. Callers do not need to hit an expire endpoint, and a late sweeper does not keep the seat occupied.
+- The **backend UTC clock** is the single time source. All expiry decisions are made on the server, and timestamps are returned in UTC ISO format.
+- The frontend countdown shows time remaining using *server* time: browser time plus an offset calculated from the `Date` response header. This keeps the timer correct even if the user's PC clock is wrong. The backend exposes the `Date` header through CORS for this (browsers hide it otherwise).
+- The `Date` header has one-second precision, so the countdown can be off by up to about a second. The server is always the authority. If the browser thinks a hold expired but the server disagrees (or the reverse), the next refresh corrects the screen, and the server rejects any invalid confirm anyway.
 
-The countdown uses the HTTP `Date` header so a laptop clock that is ahead or behind the server does not leave “Pay Admission Fee” enabled after the server has expired the hold.
+## 7. Frontend
 
-## Concurrency, including two API processes
+- **Student ID** is stored in `localStorage` and restored on reload. The applications list is fetched from the server using that ID, so closing and reopening the browser still shows ongoing applications.
+- **Polling:** classes and "My Applications" refresh every 4 seconds. They also refresh immediately after any action (apply, pay, cancel, create).
+- **Countdown** ticks every second. At zero the card shows `EXPIRED` locally, Pay and Cancel are hidden, and a refresh is triggered to confirm with the server.
+- Buttons are disabled while a request is in flight to prevent double clicks.
+- The Apply button reads "Applied" if the student already has an active application in that class, and "Full" when no seats are available. The server still enforces both rules.
+- **Errors** appear as toasts, using the server's friendly message where available. A red banner shows when the server is unreachable, and the page keeps retrying by itself.
+- No UI component library or state library was used, to keep the build small. Design is deliberately simple, as the brief says aesthetics aren't critical.
 
-Held seats plus confirmed seats must never exceed `totalSeats`, including when two API processes share one database.
+## 8. Test and load results
 
-Each apply runs in a transaction and locks the class row with `SELECT ... FOR UPDATE`. Other applies for that class, in this process or another, wait until the lock is released. The code then counts unexpired `HELD` rows and `CONFIRMED` rows. It inserts a new hold only when that sum is below `totalSeats`. Confirmation only changes an existing `HELD` row to `CONFIRMED`, so it does not consume an extra seat. PostgreSQL holds the row lock across connections, so a second process on another port is covered by the same lock.
+- Backend tests (`dotnet test`, using a real PostgreSQL container via Testcontainers) cover: 200 parallel applies against 10 seats, parallel idempotent confirm, duplicate application (sequential and parallel), expiry and release of seats, ownership check, cancel, input validation, and the two-instance test.
+- Manual load test (`scripts/load.sh`): 500 concurrent applications for 50 seats.
+  - One backend: `TODO: paste uniq -c output (expected: 50 x 201, 450 x 409)`
+  - Two backends, same database: `TODO: paste uniq -c outputs (expected: 50 x 201 in total)`
 
-A partial unique index on `(class_id, student_id)` for statuses `HELD` and `CONFIRMED` is a second guard against two active applications for one student in one class. Before a new insert, that student’s own already-expired `HELD` rows are marked `EXPIRED`, so the index does not block a legitimate re-apply.
+## 9. Known limitations
 
-## Persistence and configuration
-
-EF Core `EnsureCreated` builds the schema on startup. Data lives in the `pgdata` Docker volume, so `docker compose down` followed by `docker compose up` keeps classes and applications. Later model changes are not migrated automatically; the volume would need to be recreated.
-
-The API reads `ConnectionStrings__Default`. In Compose it points at the `postgres` service. `appsettings.json` has a localhost default for running the API outside Docker.
-
-Identifiers look like `c_` or `h_` plus 12 hexadecimal characters.
-
-`VITE_API_URL` is applied when the frontend image is built, because Vite inlines it. Changing the API URL means rebuilding the frontend image. Compose defaults it to `http://localhost:8080`, which is correct for a browser on the host talking to the published API port.
-
-The UI polls classes and the student’s applications every 4 seconds. On top of that, the hold card switches to `EXPIRED` and disables payment as soon as the local countdown reaches zero.
+- No authentication or authorisation (by design of the brief). IDs are trusted.
+- `EnsureCreated` means no migration history.
+- Seat counts are computed on read rather than stored in a counter column. This is simple and always consistent, and fine for the expected scale. A very large deployment might cache or denormalise them.
+- Polling (4 s) rather than WebSockets, so another user's changes can take up to 4 seconds to appear. The server is still always correct.
