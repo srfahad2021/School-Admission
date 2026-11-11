@@ -2,6 +2,7 @@ import { useState } from "react";
 import { api, errorMessage } from "../api";
 import { useToast } from "../toast";
 import type { ClassView } from "../types";
+import { t } from "../strings";
 
 interface Props {
   classes: ClassView[] | null;
@@ -20,7 +21,7 @@ export default function ClassList({ classes, loading, studentId, activeClassIds,
     setBusyId(c.id);
     try {
       await api.apply(c.id, studentId);
-      toast(`Seat held in "${c.name}". Pay the fee before the timer runs out.`, "success");
+      toast(t.applied(c.name));
     } catch (e) {
       toast(errorMessage(e));
     } finally {
@@ -30,23 +31,23 @@ export default function ClassList({ classes, loading, studentId, activeClassIds,
   }
 
   function label(c: ClassView) {
-    if (busyId === c.id) return "Applying...";
-    if (activeClassIds.has(c.id)) return "Applied";
-    if (c.availableSeats <= 0) return "Full";
-    return "Apply";
+    if (busyId === c.id) return t.applying;
+    if (activeClassIds.has(c.id)) return t.alreadyApplied;
+    if (c.availableSeats <= 0) return t.full;
+    return t.apply;
   }
 
   return (
     <section>
-      <h2>Classes</h2>
-      {!studentId && <p className="muted">Enter your 17-digit Birth Registration Number above to apply.</p>}
-      {loading && !classes && <p className="muted">Loading classes...</p>}
-      {classes && classes.length === 0 && <p className="muted">No classes yet. Create one above.</p>}
+      <h2>{t.classListTitle}</h2>
+      {!studentId && <p className="muted">{t.needId}</p>}
+      {loading && !classes && <p className="muted">{t.loadingClasses}</p>}
+      {classes && classes.length === 0 && <p className="muted">{t.noClasses}</p>}
       {classes && classes.length > 0 && (
         <div style={{ overflowX: "auto" }}>
           <table>
             <thead>
-              <tr><th>Class</th><th>Total</th><th>Held</th><th>Confirmed</th><th>Available</th><th></th></tr>
+              <tr><th>{t.colClass}</th><th>{t.colTotal}</th><th>{t.colHeld}</th><th>{t.colConfirmed}</th><th>{t.colAvailable}</th><th></th></tr>
             </thead>
             <tbody>
               {classes.map((c) => (

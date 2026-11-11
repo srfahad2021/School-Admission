@@ -5,6 +5,7 @@ import { ToastProvider } from "./toast";
 import CreateClassForm from "./components/CreateClassForm";
 import ClassList from "./components/ClassList";
 import MyApplications from "./components/MyApplications";
+import { normalizeDigits, t } from "./strings";
 
 const STORAGE_KEY = "studentId";
 const ID_RE = /^\d{17}$/;
@@ -60,22 +61,22 @@ function Main() {
           <div>
             <input
               className={invalid ? "invalid" : ""}
-              placeholder="17-digit Birth Registration Number"
+              placeholder={t.idPlaceholder}
               inputMode="numeric"
               maxLength={17}
               value={draft}
-              onChange={(e) => setDraft(e.target.value.replace(/\D/g, ""))}
-              aria-label="Birth Registration Number"
+              onChange={(e) => setDraft(normalizeDigits(e.target.value).replace(/\D/g, ""))}
+              aria-label={t.idAria}
             />
             <div className="hint">
-              {invalid ? `${draft.length}/17 digits. It must be exactly 17.` : studentId ? "ID accepted" : "Required to apply"}
+              {invalid ? t.idHintInvalid(draft.length) : studentId ? t.idHintOk : t.idHintRequired}
             </div>
           </div>
         </div>
       </header>
 
       {serverProblem && (
-        <div className="banner">{serverProblem} We will keep retrying automatically.</div>
+        <div className="banner">{serverProblem} {t.retrying}</div>
       )}
 
       <main className="container">

@@ -1,5 +1,6 @@
 import { API_URL } from "./config";
 import type { ClassView, MyHold } from "./types";
+import { t, translateError } from "./strings";
 
 export class ApiError extends Error {
   status: number;
@@ -14,16 +15,9 @@ export class ApiError extends Error {
 let clockOffsetMs = 0;
 export const serverNow = () => Date.now() + clockOffsetMs;
 
-function fallbackMessage(status: number): string {
-  if (status === 400) return "Please check what you entered and try again.";
-  if (status === 403) return "You are not allowed to do that.";
-  if (status === 404) return "We could not find that item.";
-  if (status === 409) return "That is not possible right now. Seats may be full or the application may have expired.";
-  return "Something went wrong on the server. Please try again.";
-}
 
 export function errorMessage(e: unknown): string {
-  return e instanceof Error ? e.message : "Something went wrong. Please try again.";
+  return e instanceof Error ? e.message : t.genericError;
 }
 
 interface Options {
@@ -45,7 +39,7 @@ async function request<T>(path: string, opts: Options = {}): Promise<T> {
       body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
     });
   } catch {
-    throw new ApiError(0, "Server is unreachable. Please check your connection and try again.");
+    throw new ApiError(0, t.unreachable);
   }
 
   const dateHeader = res.headers.get("Date");
@@ -63,7 +57,7 @@ async function request<T>(path: string, opts: Options = {}): Promise<T> {
     /* body was not JSON */
   }
 
-  if (!res.ok) throw new ApiError(res.status, data?.error ?? fallbackMessage(res.status));
+  if (!res.ok) throw new ApiError(res.status, translateError(data?.error, res.status));
   return data as T;
 }
 
